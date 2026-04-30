@@ -216,51 +216,77 @@ async def renew_user(page, user):
 
         # 进入服务器页
         server_id = user.get("server_id", "")
-        log("寻找服务器...")
-        try:
+        log(f"寻找服务器... (当前: {page.url})")
+        
+        # 如果在 dashboard 首页，需要导航到服务器详情页
+        if server_id:
             # 方式1: 如果有 server_id，直接导航
-            if server_id:
-                log(f"  导航到服务器 {server_id}...")
-                await page.goto(f"{DASHBOARD_URL}/server/{server_id}")
-                await page.wait_for_timeout(3000)
-            else:
-                # 方式2: 在 dashboard 页面找链接
-                # 尝试多种可能的链接文字
-                found = False
-                for link_text in ["See", "View", "Manage", "Open", "Details"]:
+            log(f"  导航到服务器 {server_id}...")
+            await page.goto(f"{DASHBOARD_URL}/server/{server_id}")
+            await page.wait_for_timeout(3000)
+        else:
+            # 先尝试所有 <a> 链接
+            found = False
+            try:
+                # 调试: 列出页面所有链接
+                all_links = await page.evaluate("""() => {
+                    return [...document.querySelectorAll('a')].map(a => ({
+                        text: a.textContent.trim().substring(0, 50),
+                        href: a.href
+                    })).filter(l => l.text);
+                }""")
+                log(f"  页面链接 ({len(all_links)} 个):")
+                for lk in all_links[:15]:
+                    log(f"    '{lk['text']}' → {lk['href'][:60]}")
+                
+                # 尝试各种链接文字
+                for link_text in ["See", "View", "Manage", "Open", "Details", "Overview", "Show"]:
                     try:
                         link = page.get_by_role("link", name=link_text).first
-                        await link.wait_for(state="visible", timeout=3000)
-                        await page.wait_for_timeout(1000)
+                        await link.wait_for(state="visible", timeout=2000)
                         await link.click()
                         found = True
-                        log(f"  找到 '{link_text}' 链接")
+                        log(f"  ✅ 点击了 '{link_text}' 链接")
                         break
                     except Exception:
                         continue
+                
                 if not found:
-                    # 方式3: 尝试点击任何服务器卡片/行
-                    try:
-                        # KataBump 可能用卡片或表格行显示服务器
-                        card = page.locator(".server-card, .card, tr.server-row, [data-server-id]").first
-                        await card.wait_for(state="visible", timeout=5000)
-                        await card.click()
+                    # 尝试包含 /server/ 的链接
+                    server_links = await page.evaluate("""() => {
+                        return [...document.querySelectorAll('a[href*="/server/"]')].map(a => ({
+                            text: a.textContent.trim().substring(0, 50),
+                            href: a.href
+                        }));
+                    }""")
+                    if server_links:
+                        log(f"  找到 {len(server_links)} 个服务器链接，点击第一个")
+                        await page.goto(server_links[0]["href"])
                         found = True
-                        log("  点击了服务器卡片")
-                    except Exception:
-                        pass
-                if not found:
-                    log("  ❌ 未找到服务器入口")
-                    shot = str(SCREENSHOT_DIR / f"{safe}_no_server.png")
-                    await page.screenshot(path=shot, full_page=True)
-                    send_tg(f"❌ *KataBump 未找到服务器*\n用户: `{username}`", shot)
-                    return False
-        except Exception as e:
-            log(f"  ❌ 进入服务器失败: {e}")
-            shot = str(SCREENSHOT_DIR / f"{safe}_nav_fail.png")
-            try: await page.screenshot(path=shot, full_page=True)
-            except: pass
-            return False
+                    else:
+                        # 最后手段: 尝试按钮
+                        for btn_text in ["See", "View", "Manage", "Go"]:
+                            try:
+                                btn = page.get_by_role("button", name=btn_text).first
+                                await btn.wait_for(state="visible", timeout=2000)
+                                await btn.click()
+                                found = True
+                                log(f"  ✅ 点击了 '{btn_text}' 按钮")
+                                break
+                            except Exception:
+                                continue
+            except Exception as e:
+                log(f"  链接检测失败: {e}")
+            
+            if not found:
+                log("  ❌ 未找到服务器入口")
+                shot = str(SCREENSHOT_DIR / f"{safe}_no_server.png")
+                await page.screenshot(path=shot, full_page=True)
+                send_tg(f"❌ *KataBump 未找到服务器*\n用户: `{username}`", shot)
+                return False
+        
+        await page.wait_for_timeout(2000)
+        log(f"  当前页面: {page.url}")
 
         # --- 续期循环 (最多 20 次) ---
         for att in range(1, 21):
