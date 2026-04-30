@@ -3,85 +3,105 @@ name: 🔄 KataBump Auto Renew
 on:
   workflow_dispatch:
   schedule:
-    - cron: "30 2 * * *"
-
-permissions:
-  contents: write
-
-concurrency:
-  group: kata-renew
-  cancel-in-progress: false
+    - cron: "30 2 * * *"  # 每天 UTC 02:30
 
 jobs:
-  renew:
+  pre-check:
     runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+    steps:
+      - name: 4-day cycle check
+        id: check
+        run: |
+          DAYS=$(( $(date -u +%s) / 86400 ))
+          REMAINDER=$(( $DAYS % 4 ))
+          if [ $REMAINDER -eq 0 ]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_run=false" >> $GITHUB_OUTPUT
+            echo "⏭️ 不在4天周期内，跳过"
+          fi
+
+  renew:
+    needs: pre-check
+    if: needs.pre-check.outputs.should_run != 'false'
+    runs-on: ubuntu-22.04
     timeout-minutes: 30
 
+    env:
+      ACCOUNTS: ${{ secrets.ACCOUNTS }}
+      TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+      TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+      HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
+
     steps:
-      - name: 📥 检出仓库
+      - name: 📥 Checkout
         uses: actions/checkout@v4
 
-      - name: 🟢 设置 Node.js 20
-        uses: actions/setup-node@v4
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
         with:
-          node-version: '20'
+          python-version: '3.11'
 
-      - name: 📦 安装系统依赖
+      - name: 📦 Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb google-chrome-stable fonts-noto-cjk xdotool
+          pip install -r requirements.txt
+          sudo apt-get update -qq
+          sudo apt-get install -y xvfb libnss3 libatk1.0-0 libatk-bridge2.0-0 \
+            libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
+            libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2
 
-      - name: 📚 安装 Node.js 依赖
-        run: npm install
+      - name: 🔍 Get Chrome version
+        id: get_version
+        run: |
+          CHROME_VERSION=$(chromium-browser --version 2>/dev/null | grep -oE '[0-9]+' | head -1)
+          if [ -z "$CHROME_VERSION" ]; then
+            CHROME_VERSION=$(google-chrome --version 2>/dev/null | grep -oE '[0-9]+' | head -1)
+          fi
+          : "${CHROME_VERSION:=136}"
+          echo "Detected: $CHROME_VERSION"
+          echo "CHROME_VERSION=$CHROME_VERSION" >> $GITHUB_ENV
 
-      - name: 📡 安装 Hysteria2
+      - name: 🔌 Start Hysteria2 proxy
         if: env.HY2_AUTH != ''
         run: |
           curl -L -o hysteria \
             https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-amd64
-          chmod +x hysteria
-          sudo mv hysteria /usr/local/bin/
-          hysteria version
-        env:
-          HY2_AUTH: ${{ secrets.HY2_AUTH }}
-
-      - name: 🔌 启动 Hysteria2 代理
-        if: env.HY2_AUTH != ''
-        run: |
+          chmod +x hysteria && sudo mv hysteria /usr/local/bin/
           printf 'server: %s\nauth: %s\ntls:\n  sni: %s\n  insecure: true\n  alpn:\n    - h3\nsocks5:\n  listen: 127.0.0.1:51080\n' \
             "${HY2_SERVER}" "${HY2_AUTH}" "${HY2_SNI}" > /tmp/hy2.yaml
-          cat /tmp/hy2.yaml
           nohup hysteria client -c /tmp/hy2.yaml > /tmp/hy2.log 2>&1 &
           sleep 5
-          cat /tmp/hy2.log
-          # 验证代理
           curl -x socks5h://127.0.0.1:51080 -s --connect-timeout 10 https://api.ipify.org && echo " ✅代理OK" || echo "❌代理失败"
         env:
           HY2_SERVER: ${{ secrets.HY2_SERVER }}
           HY2_AUTH: ${{ secrets.HY2_AUTH }}
           HY2_SNI: ${{ secrets.HY2_SNI }}
 
-      - name: ⏳ 随机延迟
+      - name: 🖥️ Start Xvfb
+        run: Xvfb :99 -ac &
+
+      - name: ⏳ Random delay
         run: sleep $((RANDOM % 120))
 
-      - name: 🚀 执行续期
+      - name: 🚀 Run Renew
         env:
-          USERS_JSON: ${{ secrets.USERS_JSON }}
-          HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        run: xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" node action_renew.js
+          DISPLAY: ':99'
+          HEADLESS: 'false'
+          CHROME_VERSION: ${{ env.CHROME_VERSION }}
+        run: python renew_katabump.py
 
-      - name: 📸 上传截图
+      - name: 📸 Upload screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: katabump-screenshots
-          path: screenshots/
+          path: "error-*.png"
           retention-days: 7
           if-no-files-found: warn
 
-      - name: ⏱️ 提交时间文件
+      - name: ⏱️ Commit time.txt
         if: always()
         run: |
           git config user.name "github-actions[bot]"
