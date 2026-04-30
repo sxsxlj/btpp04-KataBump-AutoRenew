@@ -35,27 +35,36 @@ jobs:
         run: npm install
 
       - name: 📡 安装 Hysteria2
+        if: env.HY2_AUTH != ''
         run: |
-          if [ -n "${{ secrets.HY2_PROXY_URL }}" ]; then
-            curl -L -o hysteria \
-              https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-amd64
-            chmod +x hysteria
-            sudo mv hysteria /usr/local/bin/
-            hysteria version
-          fi
+          curl -L -o hysteria \
+            https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-amd64
+          chmod +x hysteria
+          sudo mv hysteria /usr/local/bin/
+          hysteria version
 
-      - name: 🔌 启动 Hysteria2
+      - name: 🔌 启动 Hysteria2 代理
+        if: env.HY2_AUTH != ''
         run: |
-          if [ -n "${{ secrets.HY2_PROXY_URL }}" ]; then
-            nohup hysteria client \
-              -c /dev/stdin << EOF &
-          server: ${{ secrets.HY2_PROXY_URL }}
+          cat > /tmp/hy2.yaml << YAML
+          server: ${HY2_SERVER}
+          auth: ${HY2_AUTH}
+          tls:
+            sni: ${HY2_SNI}
+            insecure: true
+            alpn:
+              - h3
           socks5:
-            listen: "127.0.0.1:${{ secrets.SOCKS_PORT || '51080' }}"
-          EOF
-            sleep 3
-            echo "✅ Hysteria2 已启动"
-          fi
+            listen: 127.0.0.1:51080
+          YAML
+          nohup hysteria client -c /tmp/hy2.yaml > /tmp/hy2.log 2>&1 &
+          sleep 3
+          # 验证代理
+          curl -x socks5h://127.0.0.1:51080 -s https://api.ipify.org && echo "" || echo "代理连接失败"
+        env:
+          HY2_SERVER: ${{ secrets.HY2_SERVER }}
+          HY2_AUTH: ${{ secrets.HY2_AUTH }}
+          HY2_SNI: ${{ secrets.HY2_SNI }}
 
       - name: ⏳ 随机延迟
         run: sleep $((RANDOM % 120))
