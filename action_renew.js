@@ -151,6 +151,37 @@ async function cdpClick(page) {
     return false;
 }
 
+// --- xdotool Click Turnstile (fallback) ---
+async function xdotoolClick(page) {
+    try {
+        // Get Turnstile iframe position
+        const frames = page.frames();
+        for (const frame of frames) {
+            const data = await frame.evaluate(() => window.__turnstile_data).catch(() => null);
+            if (!data) continue;
+            const el = await frame.frameElement();
+            const box = await el.boundingBox();
+            if (!box) continue;
+            
+            const cx = Math.round(box.x + box.width * data.xRatio);
+            const cy = Math.round(box.y + box.height * data.yRatio);
+            console.log('  >> xdotool 点击: (' + cx + ', ' + cy + ')');
+            
+            // Move mouse naturally then click
+            const { execSync } = require('child_process');
+            // Move in steps
+            execSync('xdotool mousemove ' + cx + ' ' + cy);
+            await page.waitForTimeout(200 + Math.random() * 300);
+            execSync('xdotool click 1');
+            console.log('  >> xdotool 点击已发送');
+            return true;
+        }
+    } catch (e) {
+        console.log('  >> xdotool 点击失败:', e.message);
+    }
+    return false;
+}
+
 async function waitTurnstile(page, sec = 10) {
     for (let i = 0; i < sec; i++) {
         for (const f of page.frames()) {
@@ -217,16 +248,24 @@ async function waitTurnstile(page, sec = 10) {
             await page.getByRole('textbox', { name: 'Password' }).fill(user.password);
             await page.waitForTimeout(500);
 
-            // Turnstile (登录)
-            console.log('  >> 登录页 Turnstile...');
+                        // Turnstile (登录) - CDP + xdotool
+            console.log('  >> 登录页 Turnstile (CDP+xdotool)...');
             let tsOk = false;
             for (let attempt = 0; attempt < 3; attempt++) {
-                for (let i = 0; i < 15; i++) {
-                    if (await cdpClick(page)) break;
+                let clicked = false;
+                for (let i = 0; i < 10; i++) {
+                    if (await cdpClick(page)) { clicked = true; break; }
                     await page.waitForTimeout(1000);
                 }
-                if (await waitTurnstile(page, 15)) { tsOk = true; break; }
-                console.log(`  >> Turnstile 第 ${attempt+1}/3 次失败，刷新...`);
+                if (!clicked) {
+                    console.log('  >> CDP 未命中，尝试 xdotool...');
+                    for (let i = 0; i < 5; i++) {
+                        if (await xdotoolClick(page)) { clicked = true; break; }
+                        await page.waitForTimeout(1000);
+                    }
+                }
+                if (clicked && await waitTurnstile(page, 15)) { tsOk = true; break; }
+                console.log(`  >> Turnstile 第 $` + (attempt+1) + `/3 次失败，刷新...`);
                 await page.reload();
                 await page.waitForTimeout(3000);
                 try {
