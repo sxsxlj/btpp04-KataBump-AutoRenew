@@ -35,6 +35,7 @@ jobs:
 
     env:
       ACCOUNTS: ${{ secrets.ACCOUNTS }}
+      PROXY_URL: ${{ secrets.PROXY_URL }}
       BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
       CHAT_ID: ${{ secrets.TG_CHAT_ID }}
 
